@@ -1,0 +1,6 @@
+{
+  "api_key": "YOUR_AIRTABLE_PAT",
+  "base_id": "YOUR_AIRTABLE_BASE_ID",
+  "table_name": "restaurants",
+  "csv_path": "Australia/sunshine coast/restaurants.csv"
+}
