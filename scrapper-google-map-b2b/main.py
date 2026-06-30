@@ -29,10 +29,13 @@ def setup_logging():
         format='%(asctime)s - %(levelname)s - %(message)s',
     )
 
-def extract_text(page: Page, xpath: str) -> str:
+def extract_text(page: Page, xpath: str, first: bool = False) -> str:
     try:
-        if page.locator(xpath).count() > 0:
-            return page.locator(xpath).inner_text()
+        locator = page.locator(xpath)
+        if first:
+            locator = locator.first
+        if locator.count() > 0:
+            return locator.inner_text()
     except Exception as e:
         logging.warning(f"Failed to extract text for xpath {xpath}: {e}")
     return ""
@@ -44,7 +47,7 @@ def extract_place(page: Page) -> Place:
     website_xpath = '//a[@data-item-id="authority"]//div[contains(@class, "fontBodyMedium")]'
     phone_number_xpath = '//button[contains(@data-item-id, "phone:tel:")]//div[contains(@class, "fontBodyMedium")]'
     reviews_count_xpath = '//div[@class="TIHn2 "]//div[@class="fontBodyMedium dmRWX"]//div//span//span//span[@aria-label]'
-    reviews_average_xpath = '//div[@class="TIHn2 "]//div[@class="fontBodyMedium dmRWX"]//div//span[@aria-hidden]'
+    reviews_average_xpath = '.F7nice > span > span'
     info1 = '//div[@class="LTs0Rc"][1]'
     info2 = '//div[@class="LTs0Rc"][2]'
     info3 = '//div[@class="LTs0Rc"][3]'
@@ -70,7 +73,7 @@ def extract_place(page: Page) -> Place:
         except Exception as e:
             logging.warning(f"Failed to parse reviews count: {e}")
     # Reviews Average
-    reviews_avg_raw = extract_text(page, reviews_average_xpath)
+    reviews_avg_raw = extract_text(page, reviews_average_xpath, first=True)
     if reviews_avg_raw:
         try:
             temp = reviews_avg_raw.replace(' ','').replace(',','.')
@@ -121,35 +124,60 @@ def scrape_places(search_for: str, total: int) -> List[Place]:
         try:
             page.goto("https://www.google.com/maps/@32.9817464,70.1930781,3.67z?", timeout=60000)
             page.wait_for_timeout(1000)
+            try:
+                page.locator('button[aria-label="Accept all"]').click(timeout=5000)
+            except Exception:
+                pass
             page.locator("//form[contains(@jsaction,'searchboxFormSubmit')]//input[@name='q']").fill(search_for)
             page.keyboard.press("Enter")
             page.wait_for_selector('//a[contains(@href, "https://www.google.com/maps/place")]')
             page.hover('//a[contains(@href, "https://www.google.com/maps/place")]')
             previously_counted = 0
+            stale_rounds = 0
             while True:
                 page.mouse.wheel(0, 10000)
+                page.wait_for_timeout(1500)
                 page.wait_for_selector('//a[contains(@href, "https://www.google.com/maps/place")]')
                 found = page.locator('//a[contains(@href, "https://www.google.com/maps/place")]').count()
                 logging.info(f"Currently Found: {found}")
                 if found >= total:
                     break
                 if found == previously_counted:
-                    logging.info("Arrived at all available")
-                    break
+                    stale_rounds += 1
+                    if stale_rounds >= 3:
+                        logging.info("Arrived at all available")
+                        break
+                else:
+                    stale_rounds = 0
                 previously_counted = found
-            listings = page.locator('//a[contains(@href, "https://www.google.com/maps/place")]').all()[:total]
-            listings = [listing.locator("xpath=..") for listing in listings]
+            raw_links = page.locator('//a[contains(@href, "https://www.google.com/maps/place")]').all()
+            seen_hrefs = set()
+            unique_links = []
+            for link in raw_links:
+                href = link.get_attribute("href")
+                if href and href not in seen_hrefs:
+                    seen_hrefs.add(href)
+                    unique_links.append(link)
+                if len(unique_links) >= total:
+                    break
+            listings = [link.locator("xpath=..") for link in unique_links]
             logging.info(f"Total Found: {len(listings)}")
+            seen_places = set()
             for idx, listing in enumerate(listings):
                 try:
                     listing.click()
                     page.wait_for_selector('//div[@class="TIHn2 "]//h1[@class="DUwDvf lfPIob"]', timeout=10000)
                     time.sleep(1.5)  # Give time for details to load
                     place = extract_place(page)
-                    if place.name:
-                        places.append(place)
-                    else:
+                    if not place.name:
                         logging.warning(f"No name found for listing {idx+1}, skipping.")
+                        continue
+                    key = (place.name, place.address)
+                    if key in seen_places:
+                        logging.info(f"Duplicate place '{place.name}' skipped.")
+                        continue
+                    seen_places.add(key)
+                    places.append(place)
                 except Exception as e:
                     logging.warning(f"Failed to extract listing {idx+1}: {e}")
         finally:
